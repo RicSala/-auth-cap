@@ -8,7 +8,7 @@ export default function manifest(): MetadataRoute.Manifest {
     short_name: `Test`,
     description: `Test`,
     id: 'com.test.app',
-    start_url: '/auth/signin',
+    start_url: '/',
     display: 'standalone',
     display_override: ['standalone', 'window-controls-overlay', 'fullscreen'],
     background_color: '#fff',

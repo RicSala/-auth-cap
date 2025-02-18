@@ -89,6 +89,7 @@ export const useAudioRecorder = (): AudioRecorderHook => {
         const audioDevices = deviceInfos.filter(
           (device) => device.kind === 'audioinput'
         );
+        console.log('🎤 Found devices:', audioDevices);
         setDevices(audioDevices);
       } catch (error) {
         console.error('Error enumerating devices:', error);
@@ -120,6 +121,17 @@ export const useAudioRecorder = (): AudioRecorderHook => {
     if (!recorder) return;
     recorder.stream.getTracks().forEach((track) => track.stop());
   }, []);
+
+  const _handleError = (error: unknown) => {
+    console.error('❌ Recording error:', error);
+    reset();
+    setState((prev) => ({
+      ...prev,
+      status: 'idle',
+      error:
+        error instanceof Error ? error : new Error('Unknown recording error'),
+    }));
+  };
 
   // Clear everything
   const reset = () => {
@@ -236,23 +248,23 @@ export const useAudioRecorder = (): AudioRecorderHook => {
       }
     };
 
+    const handleError = (error: ErrorEvent) => {
+      console.error('❌ Recorder error:', error);
+      _handleError(error);
+    };
+
     recorder.addEventListener('dataavailable', handleDataAvailable);
     recorder.addEventListener('stop', handleStop);
     recorder.addEventListener('pause', handlePause);
     recorder.addEventListener('resume', handleResume);
-    recorder.addEventListener('error', (event) => {
-      console.error('❌ Recorder error:', event.error);
-      _handleError(event.error);
-    });
+    recorder.addEventListener('error', handleError);
 
     return () => {
       recorder.removeEventListener('dataavailable', handleDataAvailable);
       recorder.removeEventListener('stop', handleStop);
       recorder.removeEventListener('pause', handlePause);
       recorder.removeEventListener('resume', handleResume);
-      recorder.removeEventListener('error', (event) =>
-        _handleError(event.error)
-      );
+      recorder.removeEventListener('error', handleError);
     };
   };
 
@@ -262,7 +274,7 @@ export const useAudioRecorder = (): AudioRecorderHook => {
 
       if (mediaRecorderRef.current?.state === 'recording') {
         console.log('⚠️ Recorder already recording, stopping first...');
-        await stopRecording();
+        stopRecording();
       }
       reset();
 
@@ -389,17 +401,6 @@ export const useAudioRecorder = (): AudioRecorderHook => {
       _clearTimer();
     };
   }, [_clearTimer, _cleanTracks]);
-
-  const _handleError = (error: unknown) => {
-    console.error('❌ Recording error:', error);
-    reset();
-    setState((prev) => ({
-      ...prev,
-      status: 'idle',
-      error:
-        error instanceof Error ? error : new Error('Unknown recording error'),
-    }));
-  };
 
   return {
     audioUrl: state.blobUrl,
