@@ -1,5 +1,6 @@
 {
   "extends": "@workspace/typescript-config/nextjs.json",
+  "lib": ["dom", "dom.iterable", "esnext", "webworker"],
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
