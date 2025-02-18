@@ -44,6 +44,7 @@ export function NoteAudio({
     recordingBlob,
     status,
     isStopped,
+    currentDeviceLabel,
   } = useAudioRecorder();
 
   const isPreparing = false;
@@ -168,6 +169,7 @@ export function NoteAudio({
           recorderStatus: mediaRecorder?.state,
           blobUrl: audioUrl,
         })}
+        Mic:{currentDeviceLabel}
       </div>
       <div
         className={cn('relative h-24 w-48 max-w-full rounded-md bg-indigo-100')}

@@ -20,7 +20,7 @@ const INITIAL_STATE: AudioRecorderState = {
 
 export const RECORDER_OPTIONS = {
   audioBitsPerSecond: 24000,
-  timeslice: 100, // milliseconds
+  timeslice: 200, // Adjusted to 1 second for better performance
 } as const;
 
 interface AudioRecorderHook {
@@ -36,10 +36,42 @@ interface AudioRecorderHook {
   mediaRecorder: MediaRecorder | null;
   recordingBlob: Blob | null;
   releaseResources: () => void;
+  currentDeviceLabel: string | null;
 }
+
+const isSafari = () =>
+  /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
+const getAudioConstraints = (deviceId: string | null) => {
+  if (isSafari()) {
+    console.log('Safari detected');
+    return {
+      audio: {
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        sampleRate: { ideal: 44100 }, // Safari works better with this sample rate
+      },
+    };
+  }
+
+  return {
+    audio: {
+      deviceId: deviceId ? { exact: deviceId } : undefined,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  };
+};
 
 export const useAudioRecorder = (): AudioRecorderHook => {
   const [state, setState] = useState<AudioRecorderState>(INITIAL_STATE);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [currentDeviceLabel, setCurrentDeviceLabel] = useState<string | null>(
+    null
+  );
 
   // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -47,6 +79,24 @@ export const useAudioRecorder = (): AudioRecorderHook => {
   const chunksRef = useRef<Blob[]>([]);
   const timerIntervalRef = useRef<NodeJS.Timer | null>(null);
   const mimeTypeRef = useRef<string | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
+
+  // Fetch available audio input devices
+  useEffect(() => {
+    const getDevices = async () => {
+      try {
+        const deviceInfos = await navigator.mediaDevices.enumerateDevices();
+        const audioDevices = deviceInfos.filter(
+          (device) => device.kind === 'audioinput'
+        );
+        setDevices(audioDevices);
+      } catch (error) {
+        console.error('Error enumerating devices:', error);
+      }
+    };
+
+    getDevices();
+  }, []);
 
   // Does NOT set recordingTime = 0
   const _clearTimer = useCallback(() => {
@@ -73,6 +123,13 @@ export const useAudioRecorder = (): AudioRecorderHook => {
 
   // Clear everything
   const reset = () => {
+    if (state.blobUrl) {
+      URL.revokeObjectURL(state.blobUrl);
+    }
+    if (cleanupRef.current) {
+      cleanupRef.current();
+      cleanupRef.current = null;
+    }
     setState(INITIAL_STATE);
     mediaRecorderRef.current = null;
     mediaStreamRef.current = null;
@@ -80,96 +137,216 @@ export const useAudioRecorder = (): AudioRecorderHook => {
     _clearTimer();
   };
 
-  const startRecording = () => {
-    reset();
+  const setupRecorder = (recorder: MediaRecorder) => {
+    let dataReceived = false;
 
-    navigator.mediaDevices
-      .getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      })
-      .then((stream) => {
-        mediaStreamRef.current = stream;
-        const mimeType = getBestSupportedMimeType();
-        console.log('Using mimeType', { mimeType });
-        mimeTypeRef.current = mimeType;
+    const handlePause = () => {
+      _clearTimer();
+      const audioBlob = new Blob(chunksRef.current, {
+        type: mimeTypeRef.current!,
+      });
+      const url = URL.createObjectURL(audioBlob);
+      setState((prev) => ({
+        ...prev,
+        status: 'paused',
+        blobUrl: url,
+        recordingBlob: audioBlob,
+      }));
+    };
 
-        const recorder = new MediaRecorder(stream, {
-          mimeType,
-          audioBitsPerSecond: RECORDER_OPTIONS.audioBitsPerSecond,
-        });
-        mediaRecorderRef.current = recorder;
+    const handleResume = () => {
+      _startTimer();
+      setState((prev) => ({
+        ...prev,
+        status: 'recording',
+      }));
+    };
 
-        // Set event listeners
-        recorder.addEventListener('dataavailable', (e) => {
-          console.log('Data available', {
-            size: e.data.size,
-            type: e.data.type,
-            state: recorder.state,
-            chunksLength: chunksRef.current.length,
-            allChunkSizes: chunksRef.current.map((chunk) => chunk.size),
-          });
-          if (e.data.size > 0) chunksRef.current.push(e.data);
-        });
+    const handleDataAvailable = (e: BlobEvent) => {
+      console.log('📊 Data available event:', {
+        size: e.data?.size,
+        type: e.data?.type,
+        timestamp: new Date().toISOString(),
+      });
 
-        recorder.addEventListener('stop', () => {
-          const audioBlob = new Blob(chunksRef.current, {
-            type: mimeTypeRef.current!,
-          });
+      if (e.data?.size > 0) {
+        dataReceived = true;
+        try {
+          const chunk = new Blob([e.data], { type: mimeTypeRef.current! });
+          if (chunk.size > 0) {
+            chunksRef.current.push(chunk);
+            console.log(
+              '✅ Chunk added, total chunks:',
+              chunksRef.current.length
+            );
+          }
+        } catch (error) {
+          console.error('❌ Invalid chunk received:', error);
+        }
+      }
+    };
 
-          const url = URL.createObjectURL(audioBlob);
+    const handleStop = () => {
+      console.log('🛑 Stop event triggered', {
+        chunksLength: chunksRef.current.length,
+        dataReceived,
+      });
 
-          _clearTimer();
+      try {
+        if (!dataReceived) {
+          throw new Error('No audio data was received during recording');
+        }
 
-          setState((prev) => ({
-            ...prev,
-            status: 'stopped',
-            recordingBlob: audioBlob,
-            blobUrl: url,
-          }));
+        if (chunksRef.current.length === 0) {
+          throw new Error('No audio data recorded');
+        }
 
-          _cleanTracks(recorder);
-        });
-
-        recorder.addEventListener('pause', async () => {
-          console.log('Running pause handler', {
-            chunksLength: chunksRef.current.length,
-            allChunkSizes: chunksRef.current.map((chunk) => chunk.size),
-          });
-
-          const audioBlob = new Blob(chunksRef.current, {
-            type: mimeTypeRef.current!,
-          });
-
-          const url = URL.createObjectURL(audioBlob);
-
-          _clearTimer();
-
-          setState((prev) => ({
-            ...prev,
-            status: 'paused',
-            recordingBlob: audioBlob,
-            blobUrl: url,
-          }));
-
-          recorder.addEventListener('resume', () => {
-            console.log('Resuming recording');
-            setState((prev) => ({ ...prev, status: 'recording' }));
-          });
+        const audioBlob = new Blob(chunksRef.current, {
+          type: mimeTypeRef.current!,
         });
 
-        console.log('Starting recorder');
-        recorder.start(RECORDER_OPTIONS.timeslice);
-        _startTimer();
+        if (audioBlob.size === 0) {
+          throw new Error('Generated empty audio blob');
+        }
+
+        console.log('✅ Audio blob created:', {
+          size: audioBlob.size,
+          type: audioBlob.type,
+        });
+
+        const url = URL.createObjectURL(audioBlob);
+        _clearTimer();
+
+        // Test the audio blob by playing it
+        const audio = new Audio(url);
+        audio.play();
+
         setState((prev) => ({
           ...prev,
-          status: 'recording',
-          recordingBlob: null,
+          status: 'stopped',
+          recordingBlob: audioBlob,
+          blobUrl: url,
+          error: null,
         }));
+
+        _cleanTracks(recorder);
+      } catch (error) {
+        console.error('❌ Error in stop handler:', error);
+        _handleError(error);
+      }
+    };
+
+    recorder.addEventListener('dataavailable', handleDataAvailable);
+    recorder.addEventListener('stop', handleStop);
+    recorder.addEventListener('pause', handlePause);
+    recorder.addEventListener('resume', handleResume);
+    recorder.addEventListener('error', (event) => {
+      console.error('❌ Recorder error:', event.error);
+      _handleError(event.error);
+    });
+
+    return () => {
+      recorder.removeEventListener('dataavailable', handleDataAvailable);
+      recorder.removeEventListener('stop', handleStop);
+      recorder.removeEventListener('pause', handlePause);
+      recorder.removeEventListener('resume', handleResume);
+      recorder.removeEventListener('error', (event) =>
+        _handleError(event.error)
+      );
+    };
+  };
+
+  const startRecording = async (retryCount = 0) => {
+    try {
+      console.log('🎙️ Starting recording attempt:', retryCount);
+
+      if (mediaRecorderRef.current?.state === 'recording') {
+        console.log('⚠️ Recorder already recording, stopping first...');
+        await stopRecording();
+      }
+      reset();
+
+      const selectedDeviceId = devices.length > 0 ? devices[0]?.deviceId : null;
+      setCurrentDeviceLabel(
+        devices.length > 0
+          ? devices[0]?.label || 'Default Microphone'
+          : 'Default Microphone'
+      );
+
+      console.log('🎤 Requesting media stream...');
+      const stream = await navigator.mediaDevices
+        .getUserMedia(getAudioConstraints(selectedDeviceId ?? null))
+        .catch((error) => {
+          console.error('❌ Failed to get media stream:', error);
+          throw error;
+        });
+
+      if (!stream?.active) {
+        console.error('❌ Stream is inactive');
+        throw new Error('Obtained inactive media stream');
+      }
+
+      console.log('✅ Stream obtained:', {
+        tracks: stream.getTracks().map((t) => ({
+          kind: t.kind,
+          enabled: t.enabled,
+          muted: t.muted,
+          readyState: t.readyState,
+        })),
       });
+
+      mediaStreamRef.current = stream;
+
+      const mimeType = getBestSupportedMimeType();
+      console.log('📝 Using MIME type:', mimeType);
+
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        console.error('❌ Mime type not supported');
+        throw new Error(`Mime type ${mimeType} is not supported`);
+      }
+      mimeTypeRef.current = mimeType;
+
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        audioBitsPerSecond: RECORDER_OPTIONS.audioBitsPerSecond,
+      });
+
+      console.log('🎙️ Recorder created:', {
+        state: recorder.state,
+        mimeType: recorder.mimeType,
+        audioBitsPerSecond: recorder.audioBitsPerSecond,
+      });
+
+      if (recorder.state === 'inactive') {
+        const cleanup = setupRecorder(recorder);
+        cleanupRef.current = cleanup;
+        mediaRecorderRef.current = recorder;
+
+        try {
+          console.log('▶️ Starting recorder...');
+          recorder.start(RECORDER_OPTIONS.timeslice);
+          _startTimer();
+          setState((prev) => ({
+            ...prev,
+            status: 'recording',
+            recordingBlob: null,
+            error: null,
+          }));
+          console.log('✅ Recorder started successfully');
+        } catch (error) {
+          console.error('❌ Failed to start recorder:', error);
+          cleanup();
+          throw error;
+        }
+      }
+    } catch (error) {
+      if (retryCount < 2) {
+        console.warn(`⚠️ Recording failed, retrying... (${retryCount + 1}/2)`);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        return startRecording(retryCount + 1);
+      }
+      _handleError(error);
+    }
   };
 
   // Stop recording function
@@ -185,19 +362,20 @@ export const useAudioRecorder = (): AudioRecorderHook => {
   };
 
   const togglePauseResume = async () => {
+    console.log('Toggling pause/resume');
     if (!mediaRecorderRef.current) return;
     if (mediaRecorderRef.current.state === 'inactive') return;
-    console.log('Toggling pause/resume');
 
     if (state.status === 'paused') {
+      console.log('Resuming recording');
       mediaRecorderRef.current.resume();
       _startTimer();
     } else {
+      console.log('Pausing recording');
       // Pause recording
       _clearTimer();
 
       if (state.blobUrl) {
-        console.log('Revoking previous url');
         URL.revokeObjectURL(state.blobUrl);
       }
       mediaRecorderRef.current?.pause();
@@ -212,6 +390,17 @@ export const useAudioRecorder = (): AudioRecorderHook => {
     };
   }, [_clearTimer, _cleanTracks]);
 
+  const _handleError = (error: unknown) => {
+    console.error('❌ Recording error:', error);
+    reset();
+    setState((prev) => ({
+      ...prev,
+      status: 'idle',
+      error:
+        error instanceof Error ? error : new Error('Unknown recording error'),
+    }));
+  };
+
   return {
     audioUrl: state.blobUrl,
     status: state.status,
@@ -225,5 +414,6 @@ export const useAudioRecorder = (): AudioRecorderHook => {
     mediaRecorder: mediaRecorderRef.current,
     recordingBlob: state.recordingBlob,
     releaseResources: reset,
+    currentDeviceLabel,
   };
 };

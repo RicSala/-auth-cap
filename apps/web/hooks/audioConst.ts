@@ -12,35 +12,25 @@
 // ];
 
 export const AUDIO_CONFIGS = {
-  // 'audio/webm;codecs=opus': {
-  //   extension: 'webm',
-  //   estimatedSizeMBPerMinute: 0.75,
-  //   priority: 1,
-  // },
-  // 'audio/webm': {
-  //   extension: 'webm',
-  //   estimatedSizeMBPerMinute: 1,
-  //   priority: 2,
-  // },
-  // 'video/webm': {
-  //   extension: 'webm',
-  //   estimatedSizeMBPerMinute: 1,
-  //   priority: 2,
-  // },
-  // 'audio/ogg;codecs=opus': {
-  //   extension: 'ogg',
-  //   estimatedSizeMBPerMinute: 0.8,
-  //   priority: 3,
-  // },
+  'audio/webm;codecs=opus': {
+    extension: 'webm',
+    estimatedSizeMBPerMinute: 0.75,
+    priority: 1,
+  },
+  'audio/webm': {
+    extension: 'webm',
+    estimatedSizeMBPerMinute: 1,
+    priority: 2,
+  },
   'audio/mp4': {
     extension: 'mp4',
     estimatedSizeMBPerMinute: 1.5,
-    priority: 4,
+    priority: 3,
   },
   'audio/mpeg': {
     extension: 'mp3',
     estimatedSizeMBPerMinute: 1.5,
-    priority: 5,
+    priority: 4,
   },
 } as const;
 
